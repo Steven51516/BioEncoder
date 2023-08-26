@@ -1,0 +1,97 @@
+from rdkit import Chem, RDConfig
+from rdkit.Chem import AllChem, ChemicalFeatures
+from rdkit.Chem import rdmolfiles, rdmolops
+from functools import partial
+import dgl
+import torch
+
+
+def mol_to_graph(mol, graph_constructor, node_featurizer, edge_featurizer,
+                 canonical_atom_order, explicit_hydrogens=False, num_virtual_nodes=0):
+    if mol is None:
+        print('Invalid mol found')
+        return None
+
+    # Whether to have hydrogen atoms as explicit nodes
+    if explicit_hydrogens:
+        mol = Chem.AddHs(mol)
+
+    if canonical_atom_order:
+        new_order = rdmolfiles.CanonicalRankAtoms(mol)
+        mol = rdmolops.RenumberAtoms(mol, new_order)
+    g = graph_constructor(mol)
+
+    if node_featurizer is not None:
+        g.ndata.update(node_featurizer(mol))
+
+    if edge_featurizer is not None:
+        g.edata.update(edge_featurizer(mol))
+
+    if num_virtual_nodes > 0:
+        num_real_nodes = g.num_nodes()
+        real_nodes = list(range(num_real_nodes))
+        g.add_nodes(num_virtual_nodes)
+
+        # Change Topology
+        virtual_src = []
+        virtual_dst = []
+        for count in range(num_virtual_nodes):
+            virtual_node = num_real_nodes + count
+            virtual_node_copy = [virtual_node] * num_real_nodes
+            virtual_src.extend(real_nodes)
+            virtual_src.extend(virtual_node_copy)
+            virtual_dst.extend(virtual_node_copy)
+            virtual_dst.extend(real_nodes)
+        g.add_edges(virtual_src, virtual_dst)
+
+        for nk, nv in g.ndata.items():
+            nv = torch.cat([nv, torch.zeros(g.num_nodes(), 1)], dim=1)
+            nv[-num_virtual_nodes:, -1] = 1
+            g.ndata[nk] = nv
+
+        for ek, ev in g.edata.items():
+            ev = torch.cat([ev, torch.zeros(g.num_edges(), 1)], dim=1)
+            ev[-num_virtual_nodes * num_real_nodes * 2:, -1] = 1
+            g.edata[ek] = ev
+
+    return g
+
+
+def smile_to_bigraph(x, add_self_loop=False,
+                   node_featurizer=None,
+                   edge_featurizer=None,
+                   canonical_atom_order=True,
+                   explicit_hydrogens=False,
+                   num_virtual_nodes=0):
+    mol = Chem.MolFromSmiles(x)
+    return mol_to_graph(mol, partial(construct_bigraph_from_mol, add_self_loop=add_self_loop),
+                        node_featurizer, edge_featurizer,
+                        canonical_atom_order, explicit_hydrogens, num_virtual_nodes)
+
+
+def construct_bigraph_from_mol(mol, add_self_loop=False):
+    g = dgl.graph(([], []), idtype=torch.int32)
+
+    # Add nodes
+    num_atoms = mol.GetNumAtoms()
+    g.add_nodes(num_atoms)
+
+    # Add edges
+    src_list = []
+    dst_list = []
+    num_bonds = mol.GetNumBonds()
+    for i in range(num_bonds):
+        bond = mol.GetBondWithIdx(i)
+        u = bond.GetBeginAtomIdx()
+        v = bond.GetEndAtomIdx()
+        src_list.extend([u, v])
+        dst_list.extend([v, u])
+
+    if add_self_loop:
+        nodes = g.nodes().tolist()
+        src_list.extend(nodes)
+        dst_list.extend(nodes)
+
+    g.add_edges(torch.IntTensor(src_list), torch.IntTensor(dst_list))
+
+    return g
