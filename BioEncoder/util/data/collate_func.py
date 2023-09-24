@@ -1,10 +1,15 @@
-import numpy as np
 import torch
+import numpy as np
 
-def dgl_collate_func(x):
-    d, p, y = zip(*x)
-    import dgl
-    d = dgl.batch(d)
-    p = np.array(p)
-    y = np.array(y)
-    return d, torch.tensor(p), torch.tensor(y)
+def get_collate(x, collate_func):
+    collate_func.append(None)
+    transposed_x = list(zip(*x))
+    collated_data = [func(data) if func is not None else torch.tensor(np.array(data)) for func, data in zip(collate_func, transposed_x)]
+    return collated_data
+
+
+def tuple_collate(x):
+    return [torch.stack([torch.tensor(item) for item in list_item]) for list_item in zip(*x)]
+
+
+

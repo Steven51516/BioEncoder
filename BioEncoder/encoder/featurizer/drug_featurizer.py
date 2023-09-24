@@ -6,6 +6,7 @@ from functools import partial
 from rdkit import Chem, DataStructs
 from rdkit.Chem import AllChem
 import numpy as np
+from BioEncoder.util.biochem.drug.moleculeNet import moleculeNet
 
 
 class DrugOneHotFeaturizer(Featurizer):
@@ -39,7 +40,7 @@ class DrugOneHotFeaturizer(Featurizer):
 
 
 class GCNGraphFeaturizer(Featurizer):
-    def __init__(self):
+    def __init__(self, virtual_nodes = False):
         super().__init__()
         self.node_featurizer = CanonicalAtomFeaturizer()
         self.edge_featurizer = CanonicalBondFeaturizer(self_loop=True)
@@ -47,9 +48,26 @@ class GCNGraphFeaturizer(Featurizer):
                                       node_featurizer=self.node_featurizer,
                                       edge_featurizer=self.edge_featurizer,
                                       add_self_loop=True)
+        self.virtual_nodes = virtual_nodes
+
 
     def transform(self, x):
-        return self.transform_func(x)
+        x = self.transform_func(x)
+        if self.virtual_nodes:
+            actual_node_feats = x.ndata.pop('h')
+            num_actual_nodes = actual_node_feats.shape[0]
+            num_virtual_nodes = 50 - num_actual_nodes
+
+            virtual_node_bit = torch.zeros([num_actual_nodes, 1])
+            actual_node_feats = torch.cat((actual_node_feats, virtual_node_bit), 1)
+            x.ndata['h'] = actual_node_feats
+            virtual_node_feat = torch.cat((torch.zeros(num_virtual_nodes, 74), torch.ones(num_virtual_nodes, 1)), 1)
+
+            x.add_nodes(num_virtual_nodes, {"h": virtual_node_feat})
+            x = x.add_self_loop()
+        return x
+
+
 
 
 class MorganFeaturizer(Featurizer):
@@ -80,3 +98,26 @@ class DrugEmbeddingFeaturizer(Featurizer):
 
     def transform(self, x):
         return self.drug_encoder.encode(x, self.max_d)
+
+class Drug3DFeaturizer(Featurizer):
+    def transform(self, x):
+        return get_mol_features(x)[:3]
+
+
+class DrugMolNetFeaturizer(Featurizer):
+    def transform(self, x):
+        return moleculeNet(x)
+
+
+class Drug3dNetFeaturizer(Featurizer):
+    def __init__(self):
+        super().__init__()
+        self.node_featurizer = CanonicalAtomFeaturizer()
+        self.edge_featurizer = edge_dist_featurizer
+        self.transform_func = partial(smile_to_complete_graph,
+                                      node_featurizer=self.node_featurizer,
+                                      edge_featurizer=self.edge_featurizer,
+                                      add_self_loop=True)
+
+    def transform(self, x):
+        return self.transform_func(x)

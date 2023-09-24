@@ -2,22 +2,33 @@ import torch.nn as nn
 import pandas as pd
 from torch.utils.data import DataLoader
 import torch.optim as optim
+from torch.optim.lr_scheduler import ExponentialLR
 import torch
 from BioEncoder.task.DTI.DTILoader import *
 from BioEncoder.util.data.data_processing import *
 
 
 class DTITrainer:
-    def __init__(self, drug_encoder, target_encoder, device='cpu', epochs=70, lr=0.001, batch_size=256, num_workers=0):
+    def __init__(self, drug_encoder, target_encoder, model, device='cpu', epochs=100, lr=0.001, batch_size=256, num_workers=0, interaction = "cat", scheduler = None):
         self.device = device
         self.drug_encoder = drug_encoder
         self.protein_encoder = target_encoder
-        self.model = drug_encoder.get_joined_model(target_encoder, head=1)
+        if self.drug_encoder.model_training_setup["to_device_in_model"]:
+            self.drug_encoder.model.device = self.device
+        if self.protein_encoder.model_training_setup["to_device_in_model"]:
+            self.protein_encoder.model.device = self.device
+        self.model = model
         self.criterion = nn.MSELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         self.epochs = epochs
         self.batch_size = batch_size
         self.num_workers = num_workers
+        if scheduler == "exp":
+            self.scheduler = ExponentialLR(self.optimizer, gamma=0.95)
+        else:
+            self.scheduler = None
+        self.model.to(self.device)
+
 
     def prepare_datasets(self, drugs, targets, y, split_frac=[1]):
         processed_drugs = self.drug_encoder.transform(drugs, 1)
@@ -30,14 +41,9 @@ class DTITrainer:
         return split(df, split_frac, shuffle=True)
 
     def to_device(self, v_d, v_t, y):
-        if self.drug_encoder.model_training_setup["to_device_in_model"]:
-            self.model.device = self.device
-        else:
+        if not self.drug_encoder.model_training_setup["to_device_in_model"]:
             v_d = v_d.float().to(self.device)
-
-        if self.protein_encoder.model_training_setup["to_device_in_model"]:
-            self.model.device = self.device
-        else:
+        if not self.protein_encoder.model_training_setup["to_device_in_model"]:
             v_t = v_t.float().to(self.device)
         y = torch.from_numpy(np.array(y)).float().to(self.device)
         return v_d, v_t, y
@@ -56,6 +62,9 @@ class DTITrainer:
         collate_func = self.drug_encoder.model_training_setup["collate_func"]
         if collate_func is not None:
             params['collate_fn'] = collate_func
+        collate_func = self.protein_encoder.model_training_setup["collate_func"]
+        if collate_func is not None:
+            params['collate_fn'] = collate_func
         return DataLoader(data, shuffle=shuffle, **params)
 
     def train(self, train_df, val_df=None, test_df=None):
@@ -68,6 +77,8 @@ class DTITrainer:
             self.train_one_epoch(train_loader, epoch)
             if val_loader:
                 self.validate_one_epoch(val_loader, epoch)
+            if self.scheduler is not None:
+                self.scheduler.step()
 
     def train_one_epoch(self, train_loader, epoch):
         self.model.train()

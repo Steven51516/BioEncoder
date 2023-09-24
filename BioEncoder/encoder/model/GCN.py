@@ -4,9 +4,8 @@ import torch.nn as nn
 import dgl
 import torch.nn.functional as F
 
-
 class DGL_GCN(nn.Module):
-    def __init__(self, in_feats=74, hidden_feats=[64,64,64], activation=[F.relu,F.relu,F.relu], output_feats=64, device='cpu'):
+    def __init__(self, in_feats=74, hidden_feats=[64,64,64], activation=[F.relu,F.relu,F.relu], output_feats=64, device='cpu', max_nodes=50, readout = True):
         super(DGL_GCN, self).__init__()
         self.device = device
         self.gnn = GCN(in_feats=in_feats,
@@ -14,16 +13,69 @@ class DGL_GCN(nn.Module):
                        activation=activation
                        )
         gnn_out_feats = self.gnn.hidden_feats[-1]
-        self.readout = WeightedSumAndMax(gnn_out_feats)
-        self.transform = nn.Linear(self.gnn.hidden_feats[-1] * 2, output_feats)
+        self.readout = readout
+        self.readout_1D = WeightedSumAndMaxTransform(gnn_out_feats, output_feats)
+        self.transform = nn.Linear(gnn_out_feats * 2, output_feats)
         self.output_dim = output_feats
+        self.max_nodes = max_nodes
+        self.virtual_node_feat = torch.zeros(gnn_out_feats).to(self.device)  # Assuming it should be zeros
 
     def forward(self, bg):
+
+
         bg = bg.to(self.device)
         feats = bg.ndata.pop('h')
+        feats = feats.to(torch.float32)
+
         node_feats = self.gnn(bg, feats)
-        graph_feats = self.readout(bg, node_feats)
-        return self.transform(graph_feats)
+        if self.readout:
+            # batch_size = bg.batch_size
+            # return node_feats.view(batch_size, -1, self.output_dim)
+            return self.readout_1D(bg, node_feats)
+        else:
+            return bg, node_feats
+
+    def readout_2D(self, bg, node_feats):
+
+        num_nodes_per_graph = bg.batch_num_nodes()
+
+        # Determine the maximum number of nodes across all graphs
+        max_nodes = max(num_nodes_per_graph)
+
+        # Number of graphs in the batch
+        num_graphs = len(num_nodes_per_graph)
+
+        # Node feature dimension
+        node_feat_dim = node_feats.shape[-1]
+
+        # Initialize output tensor with zeros
+        output = torch.zeros((num_graphs, max_nodes, node_feat_dim), device=node_feats.device)
+
+        # Counter for where in the node_feats tensor we currently are
+        node_counter = 0
+        for i, num_nodes in enumerate(num_nodes_per_graph):
+            # Get node features for the current graph
+            graph_node_feats = node_feats[node_counter:node_counter + num_nodes]
+
+            # Set them in the output tensor
+            output[i, :num_nodes] = graph_node_feats
+
+            # Update the counter
+            node_counter += num_nodes
+
+        return output
+
+
+class WeightedSumAndMaxTransform(nn.Module):
+    def __init__(self, gnn_out_feats, output_feats):
+        super(WeightedSumAndMaxTransform, self).__init__()
+        self.weighted_sum_and_max = WeightedSumAndMax(gnn_out_feats)
+        self.linear = nn.Linear(gnn_out_feats * 2, output_feats)
+
+    def forward(self, bg, feat):
+        x = self.weighted_sum_and_max(bg, feat)
+        return self.linear(x)
+
 
 
 # pylint: disable=W0221

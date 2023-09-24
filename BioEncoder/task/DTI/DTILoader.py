@@ -1,5 +1,5 @@
 from torch.utils.data import Dataset, DataLoader
-
+import torch
 
 class DTIDataset(Dataset):
 
@@ -9,6 +9,7 @@ class DTIDataset(Dataset):
         self.labels = df["Label"].values
         self.drugs = df["Drugs"].values
         self.targets = df["Targets"].values
+
 
     def __len__(self):
         return len(self.labels)

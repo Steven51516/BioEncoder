@@ -95,3 +95,74 @@ def construct_bigraph_from_mol(mol, add_self_loop=False):
     g.add_edges(torch.IntTensor(src_list), torch.IntTensor(dst_list))
 
     return g
+
+
+def smile_to_complete_graph(smile, add_self_loop=False,
+                          node_featurizer=None,
+                          edge_featurizer=None,
+                          canonical_atom_order=True,
+                          explicit_hydrogens=False,
+                          num_virtual_nodes=0):
+    mol = Chem.MolFromSmiles(smile)
+    return mol_to_graph(mol,
+                        partial(construct_complete_graph_from_mol, add_self_loop=add_self_loop),
+                        node_featurizer, edge_featurizer,
+                        canonical_atom_order, explicit_hydrogens, num_virtual_nodes)
+
+
+
+
+
+
+
+def construct_complete_graph_from_mol(mol, add_self_loop=False):
+    """Construct a complete graph with topology only for the molecule
+
+    The **i** th atom in the molecule, i.e. ``mol.GetAtomWithIdx(i)``, corresponds to the
+    **i** th node in the returned DGLGraph.
+
+    The edges are in the order of (0, 0), (1, 0), (2, 0), ... (0, 1), (1, 1), (2, 1), ...
+    If self loops are not created, we will not have (0, 0), (1, 1), ...
+
+    Parameters
+    ----------
+    mol : rdkit.Chem.rdchem.Mol
+        RDKit molecule holder
+    add_self_loop : bool
+        Whether to add self loops in DGLGraphs. Default to False.
+
+    Returns
+    -------
+    g : DGLGraph
+        Empty complete graph topology of the molecule
+    """
+    num_atoms = mol.GetNumAtoms()
+    src = []
+    dst = []
+    for i in range(num_atoms):
+        for j in range(num_atoms):
+            if i != j or add_self_loop:
+                src.append(i)
+                dst.append(j)
+    g = dgl.graph((torch.IntTensor(src), torch.IntTensor(dst)), idtype=torch.int32)
+
+    return g
+
+
+def edge_dist_featurizer(mol, add_self_loop=True):
+    AllChem.EmbedMolecule(mol, AllChem.ETKDG())  # Generate a 3D conformation for the molecule
+
+    feats = []
+    num_atoms = mol.GetNumAtoms()
+    atoms = list(mol.GetAtoms())
+
+    for i in range(num_atoms):
+        for j in range(num_atoms):
+            if i != j or add_self_loop:
+                pos_i = mol.GetConformer().GetAtomPosition(i)  # position of atom i
+                pos_j = mol.GetConformer().GetAtomPosition(j)  # position of atom j
+
+                distance = torch.norm(torch.tensor([pos_i.x, pos_i.y, pos_i.z]) - torch.tensor([pos_j.x, pos_j.y, pos_j.z]))
+                feats.append(distance)
+
+    return {'d': torch.stack(feats).unsqueeze(-1).float()}
