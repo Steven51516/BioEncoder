@@ -93,6 +93,11 @@ class ProteinESMFeaturizer(Featurizer):
         x = create_prot_esm_embedding(x)
         return x
 
+class ProteinPocketFeaturizer(Featurizer):
+    def transform(self, x):
+        from BioEncoder.util.biochem.protein.pockets import process_protein
+        return process_protein(x)
+
 
 
 

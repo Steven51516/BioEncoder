@@ -23,7 +23,7 @@ class Transformer(nn.Sequential):
                                               num_attention_heads,
                                               attention_probs_dropout,
                                               hidden_dropout_rate)
-        self.output_dim = emb_size
+        self.output_shape = emb_size
         self.device = device
 
     ### parameter v (tuple of length 2) is from data.drug2emb_encoder

@@ -1,18 +1,3 @@
-import numpy as np
-
-
-def apply_transform(drugs, featurizer, idx):
-    if isinstance(drugs[0], np.ndarray):
-        drugs_as_tuples = [tuple(drug) for drug in drugs]
-        unique_tuples = list(set(drugs_as_tuples))
-        unique_transformed = [featurizer(drug_tuple, idx) for drug_tuple in unique_tuples]
-        mapping = dict(zip(unique_tuples, unique_transformed))
-        return [mapping[tuple(drug)] for drug in drugs]
-    else:
-        unique_values = np.unique(drugs)
-        unique_transformed = [featurizer(drug, idx) for drug in unique_values]
-        mapping = dict(zip(unique_values, unique_transformed))
-        return [mapping[drug] for drug in drugs]
 
 
 def split(df, split_frac, shuffle=True):

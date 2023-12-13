@@ -42,17 +42,16 @@ class BETrainer:
         for idx, encoder in enumerate(self.encoders):
             input_type = encoder.input_type
             assert input_type in input_map, f"Data for encoder's input type {input_type} not found in inputs"
-
             input_data = input_map[input_type]
-            processed_data = encoder.transform(input_data, 1)
+            if encoder.model_training_setup["loadtime_transform"]:
+                processed_data = encoder.transform(input_data, mode="initial")
+            else:
+                processed_data = encoder.transform(input_data)
             data_dict[f'Input_{idx}'] = processed_data
 
-        # Add the label to the processed data
         data_dict['Label'] = y
 
-        # Convert the processed data to a dataframe
         df = pd.DataFrame(data_dict)
-
 
         return split(df, split_frac, shuffle=True)
 
@@ -76,7 +75,6 @@ class BETrainer:
         if collate_funcs:
             params['collate_fn'] = partial(get_collate, collate_func=collate_funcs)
         return DataLoader(data, shuffle=shuffle, **params)
-
 
     def train(self, train_df, val_df=None, test_df=None):
         print("Start training...")
@@ -117,4 +115,3 @@ class BETrainer:
 
         val_loss /= len(val_loader.dataset)
         print(f'Epoch: {epoch} \tValidation Loss: {val_loss:.6f}')
-

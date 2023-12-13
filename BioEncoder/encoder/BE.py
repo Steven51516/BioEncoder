@@ -1,4 +1,5 @@
 from .BE_base import *
+from collections import OrderedDict
 import torch.nn as nn
 
 
@@ -6,112 +7,117 @@ class DrugEncoder(Encoder):
     def __init__(self, method, **config):
         super().__init__(method, **config)
         self.input_type = BioEncoder.DRUG
-        self.featurizer, self.model, self.model_training_setup = init_drug_method(self.method, self.config)
+        self.model, self.featurizer, self.model_training_setup = init_drug_method(self.method, config)
 
 
-class ProteinEncoder(Encoder):
+class ProteinSEQEncoder(Encoder):
     def __init__(self, method, **config):
         super().__init__(method, **config)
         self.input_type = BioEncoder.PROT
-        self.featurizer, self.model, self.model_training_setup = init_protein_method(self.method, self.config)
+        self.model, self.featurizer, self.model_training_setup = init_protein_seq_method(self.method, config)
 
 
 class ProteinPDBEncoder(Encoder):
     def __init__(self, method, **config):
         super().__init__(method, **config)
         self.input_type = BioEncoder.PROT_PDB
-        self.featurizer, self.model, self.model_training_setup = init_protein_pdb_method(self.method, self.config)
+        self.model, self.featurizer, self.model_training_setup = init_protein_pdb_method(self.method, config)
 
 
 class BioEncoder:
-    DRUG = "drug"
-    PROT = "protein"
-    RNA = "rna"
-    GENE = "gene"
-    PROT_PDB = "protein_pdb"
+    """
+    BioEncoder class for initializing and managing different types of encoders
+    (Drug, Protein Sequence, Protein PDB) and setting up interactions between them.
+
+    Attributes:
+        nodes (list): List of nodes representing individual models or interactions.
+        encoders_dic (OrderedDict): Dictionary mapping encoders to their corresponding nodes.
+        encoder_factory (dict): Factory for creating encoder instances.
+        model (nn.Module): Compiled model, created after building the encoders and interactions.
+
+    Methods:
+        init_drug_encoder(model, **config): Initializes a drug encoder.
+        init_prot_encoder(model, pdb=False, **config): Initializes a protein encoder, with optional PDB.
+        init_encoder(encoder_type, model, **config): Generic initializer for any encoder.
+        set_interaction(nodes, method, **config): Sets up an interaction between given nodes.
+        register_interaction(method, interaction_layer, output_shape): Register a custom interaction method.
+        cat(nodes, **config): Convenience method for concatenation interaction.
+        build_model(): Builds the final model from the initialized nodes.
+        get_encoders(): Retrieves the list of initialized encoders.
+        get_model(): Retrieves the compiled model.
+    """
+
+    DRUG = "DRUG"
+    PROT_SEQ = "PROT_SEQ"
+    PROT_PDB = "PROT_PDB"
+
     def __init__(self):
-        self.nodes = {}
-        self.encoders = []
-        self.id_count = 0
-        self.input_seq = [BioEncoder.DRUG, BioEncoder.PROT]
+        self.nodes = []
+        self.encoders_dic = OrderedDict()
         self.encoder_factory = {
             BioEncoder.DRUG: DrugEncoder,
-            BioEncoder.PROT: ProteinEncoder,
+            BioEncoder.PROT_SEQ: ProteinSEQEncoder,
             BioEncoder.PROT_PDB: ProteinPDBEncoder
         }
-        self.count = 0
         self.model = None
 
-    def set_input(self, sequence):
-        self.input_seq = sequence
+        self.custom_interactions = {}
 
-    def create_encoder(self, encoder_type, model, name=None, **config):
-        encoder = self.create_enc(encoder_type, model, config)
-        encoder_node = BENode(model = encoder.get_model(), input_type=self.count, output_dim=encoder.get_output_dim())
-        self.count+=1
-        name = name or self._generate_name()
-        self.nodes[name] = encoder_node
-        self.encoders.append(encoder)
-        return encoder_node
+    def init_drug_encoder(self, model, **config):
+        return self.init_encoder(BioEncoder.DRUG, model, **config)
 
-    def add(self, parent, model, output_dim=-1, name = None):
-        if output_dim == -1:
-            output_dim = parent.output_dim
-        node = BENode(parents=[parent], model=model, output_dim = output_dim)
-        name = name or self._generate_name()
-        self.nodes[name] = node
-        return node
+    def init_prot_encoder(self, model, pdb=False, **config):
+        if pdb:
+            return self.init_encoder(BioEncoder.PROT_PDB, model, **config)
+        return self.init_encoder(BioEncoder.PROT_SEQ, model, **config)
 
-    def create_enc(self, encoder_type, model, config):
-        return self.encoder_factory[encoder_type](model, **config)
+    def init_encoder(self, encoder_type, model, **config):
+        encoder = self.encoder_factory[encoder_type](model, **config)
+        encoder_node = BENode(model=encoder.get_model(), root_idx=len(self.encoders_dic),
+                              output_shape=encoder.get_output_shape())
+        self.nodes.append(encoder_node)
+        self.encoders_dic[encoder] = encoder_node
+        return encoder
 
-    def _generate_name(self):
-        self.id_count += 1
-        return f"node_{self.id_count}"
+    def set_interaction(self, nodes, method, **config):
+        nodes = [self.encoders_dic[node] if isinstance(node, Encoder) else node for node in nodes]
+        inter_model = Interaction(nodes, method, **config)
+        inter_node = BENode(parents=nodes, model=inter_model, output_shape=inter_model.get_output_shape())
+        self.nodes.append(inter_node)
+        return inter_node
 
-    def set_interaction(self, node1, node2, method, name=None, **config):
-        interaction = Interaction(node1, node2, method, **config)
-        interaction_node = BENode(parents = [node1, node2], model= interaction, output_dim = interaction.output_dim)
-        node1.add_child(interaction_node)
-        node2.add_child(interaction_node)
-        name = name or self._generate_name()
-        self.nodes[name] = interaction_node
-        return interaction_node
-
-    def get_node(self, name):
-        return self.nodes.get(name)
+    def cat(self, nodes, **config):
+        return self.set_interaction(nodes, "cat", **config)
 
     def build_model(self):
-        self.model = BEModel(self.nodes, self.input_seq)
+        self.model = BEModel(self.nodes)
         return self.model
 
     def get_encoders(self):
-        return self.encoders
+        return list(self.encoders_dic.keys())
 
     def get_model(self):
         return self.model
 
 
-
 class BEModel(nn.Module):
-    def __init__(self, nodes, model_input):
+    def __init__(self, nodes):
         super(BEModel, self).__init__()
         self.nodes = nodes
-        self.input_type = model_input
         self.layers, self.input_indices_sequence = self.layered_topological_sort()
 
-        for name, node in self.nodes.items():
+        for i, node in enumerate(self.nodes):
             model = node.get_model()
             if model is not None and isinstance(model, nn.Module):
-                self.add_module(name, model)
+                setattr(self, f"module_{i}", model)
 
     def layered_topological_sort(self):
         layers = []
         processed = set()
         input_indices_sequence = []
 
-        current_layer = [node for name, node in self.nodes.items() if node.is_root()]
-        input_indices_sequence.append([[node.get_input_type()] for node in current_layer])
+        current_layer = [node for node in self.nodes if node.is_root()]
+        input_indices_sequence.append([[node.get_root_idx()] for node in current_layer])
         indices = {}
         processed.update(current_layer)
         current_index = len(input_indices_sequence[0])
@@ -124,7 +130,7 @@ class BEModel(nn.Module):
                 indices[node] = current_index
                 current_index += 1
 
-            for name, node in self.nodes.items():
+            for node in self.nodes:
                 if node not in processed and all(parent in processed for parent in node.get_parents()):
                     layer_input_indices.append([indices[parent] for parent in node.get_parents()])
                     next_layer.append(node)
@@ -139,7 +145,6 @@ class BEModel(nn.Module):
         for layer, layer_input_indices in zip(self.layers, self.input_indices_sequence):
             next_outputs = []
             for node, input_indices in zip(layer, layer_input_indices):
-
                 inputs = [current_outputs[index] for index in input_indices]
                 if len(inputs) == 1:
                     if isinstance(inputs[0], tuple):

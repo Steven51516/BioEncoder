@@ -12,6 +12,7 @@ def mol_to_graph(mol, graph_constructor, node_featurizer, edge_featurizer,
         print('Invalid mol found')
         return None
 
+
     # Whether to have hydrogen atoms as explicit nodes
     if explicit_hydrogens:
         mol = Chem.AddHs(mol)

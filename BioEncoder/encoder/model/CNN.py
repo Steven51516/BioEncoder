@@ -14,7 +14,7 @@ class CNN(nn.Module):
         ])
         n_size = self._conv_output_size(input_size)
         self.fc = nn.Linear(n_size, output_feats)
-        self.output_dim = output_feats
+        self.output_shape = output_feats
 
     def _conv_output_size(self, shape):
         input_tensor = torch.rand(1, *shape)

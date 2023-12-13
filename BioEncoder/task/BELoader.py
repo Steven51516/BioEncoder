@@ -18,7 +18,7 @@ class BEDataset(Dataset):
         row_features = copy.deepcopy(self.features[index])
         label = self.labels[index]
         for i, encoder in enumerate(self.encoders):
-            if encoder.get_num_transform() > 1:
-                row_features[i] = encoder.featurizer(row_features[i], 2)
+            if encoder.model_training_setup["loadtime_transform"]:
+                row_features[i] = encoder.featurizer(row_features[i], mode="loadtime")
         return *row_features, label
 

@@ -14,7 +14,7 @@ class MLP(nn.Sequential):
         super(MLP, self).__init__()
         layer_size = len(hidden_dims_lst) + 1
         dims = [input_dim] + hidden_dims_lst + [output_dim]
-        self.output_dim = output_dim
+        self.output_shape = output_dim
         self.predictor = nn.ModuleList([nn.Linear(dims[i], dims[i+1]) for i in range(layer_size)])
 
     def forward(self, v):

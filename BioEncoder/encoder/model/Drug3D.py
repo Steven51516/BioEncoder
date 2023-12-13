@@ -56,8 +56,6 @@ class GraphConv(nn.Module):
             z = self.activation_fn(z)
 
 
-
-
         return z
 
 
@@ -77,7 +75,7 @@ class Drug3DEncoder(nn.Module):
         self.gcn_3d.extend([GraphConv(d_model, d_model, activation='relu') for _ in range(n_layers_3d - 1)])
         self.gcn_3d = nn.ModuleList(self.gcn_3d)
         self.fc = nn.Linear(2 * d_model, d_model)
-        self.output_dim = 128
+        self.output_shape = 128
 
         self.attention = nn.Linear(d_model, 1)
 

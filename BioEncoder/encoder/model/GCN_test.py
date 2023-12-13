@@ -4,9 +4,9 @@ import torch.nn as nn
 import dgl
 import torch.nn.functional as F
 
-class DGL_GCN(nn.Module):
+class DGL_GCN_Test(nn.Module):
     def __init__(self, in_feats=74, hidden_feats=[64,64,64], activation=[F.relu,F.relu,F.relu], output_feats=64, device='cpu', max_nodes=50, readout = True):
-        super(DGL_GCN, self).__init__()
+        super(DGL_GCN_Test, self).__init__()
         self.device = device
         self.gnn = GCN(in_feats=in_feats,
                        hidden_feats=hidden_feats,
@@ -19,13 +19,18 @@ class DGL_GCN(nn.Module):
         self.output_shape = output_feats
         self.max_nodes = max_nodes
         self.virtual_node_feat = torch.zeros(gnn_out_feats).to(self.device)  # Assuming it should be zeros
+        self.dim_reduction_layer = nn.Linear(384, 54)
 
     def forward(self, bg):
 
 
         bg = bg.to(self.device)
-        feats = bg.ndata.pop('h')
+        feats = bg.ndata.pop('bert')
+        feats2 = bg.ndata.pop('h')
         feats = feats.to(torch.float32)
+        feats = self.dim_reduction_layer(feats)
+        feats2 = feats2.to(torch.float32)
+        feats = torch.cat((feats, feats2), dim=1)
 
         node_feats = self.gnn(bg, feats)
         if self.readout:

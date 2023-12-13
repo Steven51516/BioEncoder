@@ -1,21 +1,19 @@
-import copy
-from .config import *
+from .BE_config import *
 import torch.nn as nn
-
-from ..util.data.data_processing import apply_transform
 
 
 class BENode:
 
-    def __init__(self, parents=[], children=[], model=None, output_layer=None, input_type=None,
-                 output_dim=128):
+    def __init__(self, parents=[], children=[], model=None, root_idx=None,
+                 output_shape=None):
         super(BENode, self).__init__()
         self.parents = parents
         self.children = children
         self.model = model
-        self.output_layer = output_layer
-        self.input_type = input_type
-        self.output_dim = output_dim
+        self.output_shape = output_shape
+        self.root_idx = root_idx
+        for parent in parents:
+            parent.add_child(self)
 
     def add_parent(self, node):
         if node not in self.parents:
@@ -40,23 +38,20 @@ class BENode:
     def get_model(self):
         return self.model
 
-    def get_output_dim(self):
-        return self.output_dim
+    def get_output_shape(self):
+        return self.output_shape
 
-    def set_output_dim(self, dim):
-        self.output_dim = dim
-
-    def get_input_type(self):
-        return self.input_type
+    def get_root_idx(self):
+        return self.root_idx
 
 
 class Encoder:
     def __init__(self, method, **config):
         self.method = method
-        self.config = config
         self.featurizer = None
         self.model = None
         self.model_training_setup = None
+        self.output_shape = None
 
     def get_model(self):
         return self.model
@@ -64,64 +59,36 @@ class Encoder:
     def get_featurizer(self):
         return self.featurizer
 
-    def transform(self, entities, idx=None):
+    def transform(self, entities, mode="default"):
         temp = copy.deepcopy(entities)
-        return apply_transform(temp, self.featurizer, idx)
+        return self.featurizer(temp, mode)
 
-    def get_num_transform(self):
-        if self.featurizer:
-            return self.featurizer.get_num_steps()
-        raise ValueError("Featurizer not initialized.")
-
-    def get_output_dim(self):
-        return self.model.output_dim
+    def get_output_shape(self):
+        return self.model.output_shape
 
 
 class Interaction(nn.Module):
-    def __init__(self, node1, node2, method, head=None, mlp_hidden_layers=None, **config):
-        nn.Module.__init__(self)
+    def __init__(self, nodes, method, head=None, mlp_hidden_layers=None, **config):
+        super().__init__()
         self.method = method
-        if self.method == "cat":
-            self.join_dim = node1.get_output_dim() + node2.get_output_dim()
-            self.output_dim = self.join_dim
-        if self.method == "bilinear":
-            from BioEncoder.encoder.Interaction.bilinear import BANLayer
-            from torch.nn.utils.weight_norm import weight_norm
-            self.bilinear = weight_norm(
-            BANLayer(v_dim=64, q_dim=64, h_dim=256, h_out=2),
-            name='h_mat', dim=None)
-            self.join_dim =256
-            self.output_dim = 256
-        elif self.method == "fusion":
-            from BioEncoder.encoder.Interaction.bilinear_fusion import BilinearFusion
-            a = node1.get_output_dim()
-            b =  node2.get_output_dim()
-            self.bilinear_fusion = BilinearFusion(dim1=a, dim2 = b, mmhid1=a*b, mmhid2=128)
-            self.output_dim = 128
-            self.join_dim = 128
+        p_output_shapes = [node.get_output_shape() for node in nodes]
+        self.inter_layer, self.output_shape = init_inter_layer(method, p_output_shapes, **config)
+        self.mlp = self.setup_mlp(head, mlp_hidden_layers) if head else None
 
-        if head:
-            if mlp_hidden_layers is None:
-                mlp_hidden_layers = [1024, 718, 512]
-            mlp_layers = []
-            input_dim = self.join_dim
-            for hidden_dim in mlp_hidden_layers:
-                mlp_layers.append(nn.Linear(input_dim, hidden_dim))
-                mlp_layers.append(nn.ReLU())  # activation function
-                input_dim = hidden_dim
-            if head:
-                mlp_layers.append(nn.Linear(input_dim, head))
-            self.mlp = nn.Sequential(*mlp_layers)
-        else:
-            self.mlp = None
+    def setup_mlp(self, head, mlp_hidden_layers):
+        input_dim = self.output_shape
+        if mlp_hidden_layers is None:
+            mlp_hidden_layers = [1024, 718, 512]
+        mlp_layers = []
+        for hidden_dim in mlp_hidden_layers:
+            mlp_layers.extend([nn.Linear(input_dim, hidden_dim), nn.ReLU()])
+            input_dim = hidden_dim
+        mlp_layers.append(nn.Linear(input_dim, head))
+        return nn.Sequential(*mlp_layers)
 
-    def forward(self, encoded1, encoded2):
-        if self.method == "cat":
-            out = torch.cat([encoded1, encoded2], dim=1)
-        elif self.method == "bilinear":
-            out = self.bilinear(encoded1, encoded2)
-        elif self.method == "fusion":
-            out = self.bilinear_fusion(encoded1, encoded2)
-        if self.mlp:
-            out = self.mlp(out)
-        return out
+    def get_output_shape(self):
+        return self.output_shape
+
+    def forward(self, *encoded):
+        out = torch.cat(encoded, dim=1) if self.method == "cat" else self.inter_layer(*encoded)
+        return self.mlp(out) if self.mlp else out

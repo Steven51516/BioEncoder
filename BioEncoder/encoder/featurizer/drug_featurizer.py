@@ -7,6 +7,8 @@ from rdkit import Chem, DataStructs
 from rdkit.Chem import AllChem
 import numpy as np
 from BioEncoder.util.biochem.drug.moleculeNet import moleculeNet
+from transformers import AutoTokenizer, AutoModel
+import re
 
 
 class DrugOneHotFeaturizer(Featurizer):
@@ -21,8 +23,10 @@ class DrugOneHotFeaturizer(Featurizer):
                        'h', 'm', 'l', 'o', 'n', 's', 'r', 'u', 't', 'y']
         self.onehot_enc = OneHotEncoder().fit(np.array(smiles_char).reshape(-1, 1))
         self.smiles_char = smiles_char
+        self.transform_modes["initial"] = self.initial_transform
+        self.transfrom_modes["loadtime"] = self.loadtime_transform
 
-    def step1(self, x):
+    def initial_transform(self, x):
         temp = list(x)
         temp = [i if i in self.smiles_char else '?' for i in temp]
         if len(temp) < DrugOneHotFeaturizer.MAX_SEQ_DRUG:
@@ -31,16 +35,16 @@ class DrugOneHotFeaturizer(Featurizer):
             temp = temp[:DrugOneHotFeaturizer.MAX_SEQ_DRUG]
         return temp
 
-    def step2(self, x):
+    def loadtime_transform(self, x):
         return self.onehot_enc.transform(np.array(x).reshape(-1, 1)).toarray().T
 
     def transform(self, x):
-        x_step1 = self.step1(x)
-        return self.step2(x_step1)
+        x = self.initial_transform(x)
+        return self.loadtime_transform(x)
 
 
 class GCNGraphFeaturizer(Featurizer):
-    def __init__(self, virtual_nodes = False):
+    def __init__(self, virtual_nodes=False):
         super().__init__()
         self.node_featurizer = CanonicalAtomFeaturizer()
         self.edge_featurizer = CanonicalBondFeaturizer(self_loop=True)
@@ -49,7 +53,6 @@ class GCNGraphFeaturizer(Featurizer):
                                       edge_featurizer=self.edge_featurizer,
                                       add_self_loop=True)
         self.virtual_nodes = virtual_nodes
-
 
     def transform(self, x):
         x = self.transform_func(x)
@@ -66,8 +69,6 @@ class GCNGraphFeaturizer(Featurizer):
             x.add_nodes(num_virtual_nodes, {"h": virtual_node_feat})
             x = x.add_self_loop()
         return x
-
-
 
 
 class MorganFeaturizer(Featurizer):
@@ -99,6 +100,7 @@ class DrugEmbeddingFeaturizer(Featurizer):
     def transform(self, x):
         return self.drug_encoder.encode(x, self.max_d)
 
+
 class Drug3DFeaturizer(Featurizer):
     def transform(self, x):
         return get_mol_features(x)[:3]
@@ -121,3 +123,75 @@ class Drug3dNetFeaturizer(Featurizer):
 
     def transform(self, x):
         return self.transform_func(x)
+
+
+class DrugChemBertFeaturizer(Featurizer):
+    def __init__(self):
+        super().__init__()
+        model_name = "DeepChem/ChemBERTa-77M-MLM"
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        self.atom_finder = re.compile(r"""
+        (
+         Cl? |             # Cl and Br are part of the organic subset
+         Br? |
+         [NOSPFIbcnosp*] | # as are these single-letter elements
+         \[[^]]+\]         # everything else must be in []s
+        )
+        """, re.X)
+
+    def transform(self, x):
+        inputs = self.tokenizer(x, return_tensors="pt")
+        # print(inputs['input_ids'][0])
+        outputs = self.model(**inputs)
+        # print(outputs.last_hidden_state.shape)
+        last_hidden_states = outputs.last_hidden_state[:, 1:-1, :][0].detach()
+        x = x.replace('l', '')
+        x = x.replace('r', '')
+        matches = [x for x in self.atom_finder.finditer(x)]
+        ranges = [(match.start(), match.end()) for match in matches]
+        mean_embeddings = []
+        for start, end in ranges:
+            if start != end:  # If start and end are different, calculate the mean
+                range_embeddings = last_hidden_states[start:end].mean(dim=0)
+            else:  # If start and end are the same, use the embedding directly
+                range_embeddings = last_hidden_states[start]
+            mean_embeddings.append(range_embeddings)
+
+        # If needed, concatenate the mean embeddings to create a single tensor
+        mean_embeddings_tensor = torch.stack(mean_embeddings)
+
+        return mean_embeddings_tensor
+
+
+from rdkit.Chem import rdmolfiles, rdmolops
+
+
+class DrugChemBertGNNFeaturizer(Featurizer):
+    def __init__(self):
+        super().__init__()
+        self.node_featurizer = CanonicalAtomFeaturizer()
+        self.edge_featurizer = CanonicalBondFeaturizer(self_loop=True)
+        self.transform_func = partial(smile_to_bigraph,
+                                      canonical_atom_order=True,
+                                      node_featurizer=self.node_featurizer,
+                                      edge_featurizer=self.edge_featurizer,
+                                      add_self_loop=True)
+        self.bert = DrugChemBertFeaturizer()
+
+    def transform(self, x):
+        mol = Chem.MolFromSmiles(x)
+        new_order = rdmolfiles.CanonicalRankAtoms(mol)
+        new_order = list(new_order)
+
+        # Assuming x is a SMILES string
+        graph = self.transform_func(x)  # Convert SMILES to graph
+        bert_embedding = self.bert(x)  # Get BERT embeddings
+
+        bert_embedding = bert_embedding[new_order]
+
+        # Assuming bert_embedding is a tensor with the same first dimension
+        # as the number of nodes in the graph and that it's 2D (num_nodes, num_features)
+        graph.ndata['bert'] = bert_embedding
+
+        return graph

@@ -14,10 +14,6 @@ def load_helper(path):
             line = line.strip()
             elements = line.split()
             result.append(elements)
-            if(len(elements[3])>100):
-                print(elements[0])
-                print(elements[1])
-                print(elements[2])
     data_transposed = list(map(list, zip(*result)))
     return data_transposed
 
